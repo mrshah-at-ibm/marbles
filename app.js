@@ -21,6 +21,7 @@ var fs = require('fs');
 var os = require('os');
 var ws = require('ws');											//websocket module 
 var winston = require('winston');								//logginer module
+var HFC = require('fabric-client');
 
 // --- Set Our Things --- //
 var logger = new (winston.Logger)({
@@ -31,7 +32,7 @@ var logger = new (winston.Logger)({
 });
 var more_entropy = randStr(32);
 var helper = require(__dirname + '/utils/helper.js')(process.env.creds_filename, logger);
-var fcw = require('./utils/fc_wrangler/index.js')({ block_delay: helper.getBlockDelay() }, logger);
+var fcw = require('./utils/fc_wrangler/index.js')({ block_delay: helper.getBlockDelay(), helper: helper }, logger);
 var ws_server = require('./utils/websocket_server_side.js')({ block_delay: helper.getBlockDelay() }, fcw, logger);
 var host = 'localhost';
 var port = helper.getMarblesPort();
@@ -190,29 +191,15 @@ function setup_marbles_lib() {
 	});
 }
 
+var client = new HFC();
 //enroll an admin with the CA for this peer/channel
 function enroll_admin(attempt, cb) {
-	fcw.enroll(helper.makeEnrollmentOptions(0), function (errCode, obj) {
-		if (errCode != null) {
-			logger.error('could not enroll...');
-
-			// --- Try Again ---  //
-			if (attempt >= 2) {
-				if (cb) cb(errCode);
-			} else {
-				try {
-					logger.warn('removing older kvs and trying to enroll again');
-					rmdir(makeKVSpath());				//delete old kvs folder
-					logger.warn('removed older kvs');
-					enroll_admin(++attempt, cb);
-				} catch (e) {
-					logger.error('could not delete old kvs', e);
-				}
-			}
-		} else {
-			enrollObj = obj;
-			if (cb) cb(null);
-		}
+	logger.debug('Getting admin user');
+	helper.getAdminUser(0).then((user) => {
+		enrollObj = {user: user, client: client};
+		if(cb) cb();
+	}).catch((err) => {
+		if(cb) cb(err);
 	});
 }
 

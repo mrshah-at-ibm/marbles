@@ -5,7 +5,7 @@
 module.exports = function (logger) {
 	var utils = require('fabric-client/lib/utils.js');
 	var query_cc = {};
-
+	var HFC = require('fabric-client');
 	//-------------------------------------------------------------------
 	// Get Marble Index List
 	//-------------------------------------------------------------------
@@ -20,17 +20,24 @@ module.exports = function (logger) {
 	*/
 	query_cc.query_chaincode = function (obj, options, cb) {
 		logger.debug('[fcw] Querying Chaincode: ' + options.cc_function + '()');
-		var chain = obj.chain;
+		var client = obj.client;
+
+		var chain = client.newChain(options.channel_id);
 		var nonce = utils.getNonce();
 
+		logger.debug('[fcw] Building Query Request');
 		// send proposal to peer
 		var request = {
+			targets: [client.newPeer(helper.getPeersUrl(0), {
+					pem: helper.getPeerTLScertOpts(0).pem,
+					'ssl-target-name-override': helper.getPeerTLScertOpts(0).common_name			//can be null if cert matches hostname
+				})],
 			chainId: options.channel_id,
 			chaincodeId: options.chaincode_id,
 			chaincodeVersion: options.chaincode_version,
 			fcn: options.cc_function,
 			args: options.cc_args,
-			txId: chain.buildTransactionID(nonce, obj.submitter),
+			txId: HFC.buildTransactionID(nonce, obj.user),
 			nonce: nonce,
 		};
 		var debug = {												// this is just for console printing, no NONCE here
@@ -39,7 +46,7 @@ module.exports = function (logger) {
 			chaincodeVersion: options.chaincode_version,
 			fcn: options.cc_function,
 			args: options.cc_args,
-			txId: chain.buildTransactionID(nonce, obj.submitter),
+			txId: HFC.buildTransactionID(nonce, obj.user),
 		};
 		logger.debug('[fcw] Sending query req', debug);
 

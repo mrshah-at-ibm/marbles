@@ -8,6 +8,7 @@ module.exports = function (logger) {
 	var Peer = require('fabric-client/lib/Peer.js');
 	//var EventHub = require('fabric-client/lib/EventHub.js');
 	var utils = require('fabric-client/lib/utils.js');
+	var Client = require('fabric-client');
 	var deploy_cc = {};
 
 	//-------------------------------------------------------------------
@@ -30,7 +31,7 @@ module.exports = function (logger) {
 	deploy_cc.install_chaincode = function (obj, options, cb) {
 		logger.debug('[fcw] Installing Chaincode');
 		var chain = obj.chain;
-
+		// console.log('CHAIN = ', chain);
 		try {
 			for (var i in options.peer_urls) {
 				chain.addPeer(new Peer(options.peer_urls[i], {
@@ -47,17 +48,19 @@ module.exports = function (logger) {
 		process.env.GOPATH = path.join(__dirname, '../../chaincode');
 		var nonce = utils.getNonce();
 
+//		console.log(obj);
 		// send proposal to endorser
 		var request = {
+			targets: chain.getPeers(),
 			chaincodePath: options.path_2_chaincode,		//rel path from /server/libs/src/ to chaincode folder ex: './marbles_chaincode'
 			chaincodeId: options.chaincode_id,
 			chaincodeVersion: options.chaincode_version,
-			txId: chain.buildTransactionID(nonce, obj.submitter),
+			txId: Client.buildTransactionID(nonce, obj.submitter),
 			nonce: nonce
 		};
 		logger.debug('[fcw] Sending install req', request);
 
-		chain.sendInstallProposal(request
+		obj.client.installChaincode(request
 			//nothing
 		).then(
 			function (results) {
@@ -65,7 +68,7 @@ module.exports = function (logger) {
 				common.check_proposal_res(results, options.endorsed_hook);
 				if (cb) return cb(null, results);
 			}
-			).catch(
+		).catch(
 			function (err) {
 				logger.error('[fcw] Error in install catch block', typeof err, err);
 				var formatted = common.format_error_msg(err);
@@ -73,7 +76,8 @@ module.exports = function (logger) {
 				if (cb) return cb(formatted, null);
 				else return;
 			}
-			);
+		);
+//		cb();
 	};
 
 
@@ -128,7 +132,7 @@ module.exports = function (logger) {
 			chaincodeVersion: options.chaincode_version,
 			fcn: 'init',
 			args: options.cc_args,
-			txId: chain.buildTransactionID(nonce, obj.submitter),
+			txId: Client.buildTransactionID(nonce, obj.submitter),
 			nonce: nonce,
 		};
 		logger.debug('[fcw] Sending instantiate req', request);

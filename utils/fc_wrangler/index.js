@@ -7,7 +7,7 @@ module.exports = function (g_options, logger) {
 	var invoke_cc = require('./invoke_cc.js')(g_options, logger);
 	var query_cc = require('./query_cc.js')(logger);
 	var query_peer = require('./query_peer.js')(logger);
-	var enrollment = require('./enrollment.js')(logger);
+	var enrollment = require('./enrollment.js')(g_options, logger);
 	var fcw = {};
 
 	// ------------------------------------------------------------------------

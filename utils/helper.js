@@ -1,6 +1,8 @@
 var fs = require('fs');
 var path = require('path');
 var crypto = require('crypto');
+var HFC = require('fabric-client');
+var os = require('os');
 
 module.exports = function (config_filename, logger) {
 	var helper = {};
@@ -37,6 +39,15 @@ module.exports = function (config_filename, logger) {
 		return helper.config.cred_filename;
 	};
 
+	// get number of orderers
+	helper.getNumOrderers = function () {
+		return helper.creds.credentials.orderers.length;
+	}
+	// get number of peers
+	helper.getNumPeers = function () {
+		return helper.creds.credentials.peers.length;
+	}
+
 	// get a peer's grpc url
 	helper.getPeersUrl = function (index) {
 		if (index === undefined || index == null) {
@@ -58,6 +69,7 @@ module.exports = function (config_filename, logger) {
 			throw new Error('Peer index not passed');
 		}
 		else {
+			logger.debug('Getting MSPID for peer', index);
 			if (index < helper.creds.credentials.peers.length) {
 				return helper.creds.credentials.peers[index].msp_id;
 			}
@@ -155,6 +167,22 @@ module.exports = function (config_filename, logger) {
 		}
 	};
 
+	// get an enrollment user
+	helper.getCAName = function (index) {
+		if (index === undefined || index == null) {
+			return helper.creds.credentials.users;
+		}
+		else {
+			var ca = helper.getCA(0);
+			if (ca && ca.ca_name) {
+				return ca.ca_name;
+			}
+			else {
+				throw new Error('CA name not available in credentials under ca.ca_name');
+			}
+		}
+	};
+
 	// get a peer's grpc event url
 	helper.getPeerEventUrl = function (index) {
 		if (index === undefined || index == null) {
@@ -181,10 +209,17 @@ module.exports = function (config_filename, logger) {
 	function getTLScertObj(node, index) {
 		if (index < helper.creds.credentials[node].length) {
 			var obj = pickCertObj(helper.creds.credentials[node][index].tls_certificate);
-			return {
-				common_name: obj.common_name,
-				pem: loadCert(obj.pem)
-			};
+			if(obj) {
+				return {
+					common_name: obj.common_name,
+					pem: loadCert(obj.pem)
+				}
+			} else {
+				return {
+					common_name: null,
+					pem: null
+				}
+			}
 		}
 		logger.warn('no tls cert found for ' + node + ' in creds json: ' + creds_path);
 		return null;
@@ -201,7 +236,7 @@ module.exports = function (config_filename, logger) {
 
 	// load cert from file path OR just pass cert back
 	function loadCert(value) {
-		if (value.indexOf('-BEGIN CERTIFICATE-') === -1) {				// looks like cert field is a path to a file
+		if (value && value.indexOf('-BEGIN CERTIFICATE-') === -1) {				// looks like cert field is a path to a file
 			var path2cert = path.join(__dirname, '../config/' + value);
 			return fs.readFileSync(path2cert, 'utf8') + '\r\n'; 		//read from file, LOOKING IN config FOLDER
 		} else {
@@ -298,6 +333,7 @@ module.exports = function (config_filename, logger) {
 				ca_tls_opts: helper.getCATLScert(0),
 				orderer_tls_opts: helper.getOrdererTLScert(0),
 				peer_tls_opts: helper.getPeerTLScertOpts(0),
+				ca_name: helper.getCAName(0)
 			};
 		}
 	};
@@ -419,5 +455,99 @@ module.exports = function (config_filename, logger) {
 		return false;
 	};
 
+	// Add the specified orderer to the chain
+	helper.setupOrderers = function(client, channel_name) {
+		var chain = client.getChain(channel_name);
+		try {
+			for (var i = 0; i < helper.getNumPeers(); i++ ) {
+				chain.addOrderer(client.newOrderer(helper.getOrderersUrl(i), {
+					pem: helper.getOrdererTLScert(i).pem,
+					'ssl-target-name-override': helper.getOrdererTLScert(i).common_name			//can be null if cert matches hostname
+				}));
+				logger.debug('added orderer', helper.getOrderersUrl(i));
+			}
+		} catch (e) {
+			//might error if orderer already exists, but we don't care
+		}
+	}
+
+	helper.setupPeers = function(client, channel_name) {
+		var chain = client.getChain(channel_name);
+		try {
+			for (var i = 0; i < helper.getNumPeers(); i++ ) {
+				chain.addPeer(client.newPeer(helper.getPeersUrl(i), {
+					pem: helper.getPeerTLScertOpts(i).pem,
+					'ssl-target-name-override': helper.getPeerTLScertOpts(i).common_name			//can be null if cert matches hostname
+				}));
+				logger.debug('added peer', helper.getPeersUrl(i));
+			}
+		} catch (e) {
+				//might error if peer already exists, but we don't care			
+		}
+	}
+
+	helper.setPrimaryPeer = function(client, channel_name) {
+		var chain = client.getChain(channel_name);
+		try {
+				chain.setPrimaryPeer(client.newPeer(helper.getPeersUrl(0), {
+					pem: helper.getPeerTLScertOpts(0).pem,
+					'ssl-target-name-override': helper.getPeerTLScertOpts(0).common_name			//can be null if cert matches hostname
+				}));
+				logger.debug('set primary peer to', helper.getPeersUrl(0));
+		} catch (e) {
+				//might error if peer already exists, but we don't care			
+		}
+	}
+
+	helper.getPeerAdminCerts = function(index) {
+		logger.debug('Getting Admin certs for peer', index);
+		if (index < helper.creds.credentials.peers.length) {
+			return {
+				privateKeyPEM: loadCert(helper.creds.credentials.peers[index].admin.privateKey),
+				signedCertPEM: loadCert(helper.creds.credentials.peers[index].admin.signedCert)				
+			}
+		} else {
+			throw new Error('Peer index out of bounds. Total peers = ' + helper.creds.credentials.peers.length);
+		}
+	}
+
+	helper.getAdminUser = function(index) {
+		logger.debug('Getting Admin certs for peer', index);
+		var client = new HFC();
+		return new Promise(function(resolve, reject) {
+			if (index < helper.creds.credentials.peers.length) {
+				logger.debug('Setting up default keystore');
+				var uuid = 'marbles-' + helper.getNetworkId() + '-' + helper.getChannelId() + '-' + helper.getPeersName(index);
+				HFC.newDefaultKeyValueStore({
+					path: path.join(os.homedir(), '.hfc-key-store/' + uuid) //store eCert in the kvs directory
+				}).then((store) => {
+					client.setStateStore(store);
+				}).then(() => {
+					logger.debug('Setting up the admin user for peer', index);
+					client.createUser({
+						username: 'admin',
+						mspid: helper.getPeersMspId(index),
+						cryptoContent: helper.getPeerAdminCerts(index)
+					}).then((user) => {
+						return resolve(user);
+					});
+				}).catch(function(err) {
+					logger.debug('Error creating user ', err);
+					return reject(err);
+				});
+			} else {
+				return reject(new Error('Peer index out of bounds. Total peers = ' + helper.creds.credentials.peers.length));
+			}
+		});
+	}
+
+	helper.prepareClient = function(client, index) {
+		var localclient = client || new HFC();
+
+		if(index == null) {
+			index = 0;
+		}
+		helper.getAdminUser()
+	}
 	return helper;
 };

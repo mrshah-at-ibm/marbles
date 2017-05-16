@@ -1,5 +1,6 @@
 var winston = require('winston');								//logginer module
 var path = require('path');
+var HFC = require('fabric-client');
 
 // --- Set Our Things --- //
 var logger = new (winston.Logger)({
@@ -9,7 +10,8 @@ var logger = new (winston.Logger)({
 	]
 });
 var helper = require(path.join(__dirname, '../utils/helper.js'))('marbles1.json', logger);			//set the config file name here
-var fcw = require(path.join(__dirname, '../utils/fc_wrangler/index.js'))({ block_delay: helper.getBlockDelay() }, logger);
+var fcw = require(path.join(__dirname, '../utils/fc_wrangler/index.js'))({ block_delay: helper.getBlockDelay(), helper: helper }, logger);
+
 
 console.log('---------------------------------------');
 logger.info('Lets instantiate some chaincode -', helper.getChaincodeId(), helper.getChaincodeVersion());
@@ -17,7 +19,12 @@ console.log('---------------------------------------');
 logger.warn('Note: the chaincode should have been installed before running this script');
 
 logger.info('First we enroll');
-fcw.enroll(helper.makeEnrollmentOptions(0), function (enrollErr, enrollResp) {
+
+var client = new HFC();
+
+console.log(helper);
+
+fcw.enroll(client, function (enrollErr, enrollResp) {
 	if (enrollErr != null) {
 		logger.error('error enrolling', enrollErr, enrollResp);
 	} else {

@@ -2,8 +2,7 @@
 // Enrollment HFC Library
 //-------------------------------------------------------------------
 
-module.exports = function (logger) {
-	var HFC = require('fabric-client');
+module.exports = function (g_options, logger) {
 	//HFC.setLogger({info: function(){}, debug: function(){}, warn: function(){}, error: function(){}});	//doesn't work
 	var path = require('path');
 	var common = require(path.join(__dirname, './common.js'))(logger);
@@ -13,6 +12,8 @@ module.exports = function (logger) {
 	var Orderer = require('fabric-client/lib/Orderer.js');
 	var Peer = require('fabric-client/lib/Peer.js');
 	var os = require('os');
+	var HFC = require('fabric-client');
+	var helper = g_options.helper;
 
 	//-----------------------------------------------------------------
 	// Enroll an enrollId with the ca
@@ -42,16 +43,21 @@ module.exports = function (logger) {
 		}
 	*/
 
-	enrollment.enroll = function (options, cb) {
+	enrollment.enroll = function (client, cb) {
 		var chain = {};
-		var client = null;
-		try {
-			client = new HFC();
-			chain = client.newChain(options.channel_id);
-		}
-		catch (e) {
-			//it might error about 1 chain per network, but that's not a problem just continue
-		}
+		var options = helper.makeEnrollmentOptions(0);
+			try {
+				chain = client.getChain(options.channel_id);
+			}
+			catch (e) {
+				try {
+					logger.info('Chain does not exist, creating a new one. Ignore the above error.')
+					// If that chain doesn't exist
+					chain = client.newChain(options.channel_id);
+				} catch (e) {
+				//it might error about 1 chain per network, but that's not a problem just continue
+				}
+			}
 
 		if (!options.uuid) {
 			logger.error('cannot enroll with undefined uuid');
@@ -76,40 +82,21 @@ module.exports = function (logger) {
 			path: path.join(os.homedir(), '.hfc-key-store/' + options.uuid) //store eCert in the kvs directory
 		}).then(function (store) {
 			client.setStateStore(store);
+			console.log('CALLING GET SUBMITTER');
 			return getSubmitter(client, options);							//do most of the work here
 		}).then(function (submitter) {
+			console.log('SUBMITTER RETURNED');
 
-			chain.addOrderer(new Orderer(options.orderer_url, {
-				pem: options.orderer_tls_opts.pem,
-				'ssl-target-name-override': options.orderer_tls_opts.common_name			//can be null if cert matches hostname
-			}));
+			helper.setupOrderers(client, options.channel_id);
 
-			try {
-				for (var i in options.peer_urls) {
-					chain.addPeer(new Peer(options.peer_urls[i], {
-						pem: options.peer_tls_opts.pem,
-						'ssl-target-name-override': options.peer_tls_opts.common_name	//can be null if cert matches hostname
-					}));
-					logger.debug('added peer', options.peer_urls[i]);
-				}
-			}
-			catch (e) {
-				//might error if peer already exists, but we don't care
-			}
-			try {
-				chain.setPrimaryPeer(new Peer(options.peer_urls[0], {
-					pem: options.peer_tls_opts.pem,
-					'ssl-target-name-override': options.peer_tls_opts.common_name		//can be null if cert matches hostname
-				}));
-				logger.debug('added primary peer', options.peer_urls[0]);
-			}
-			catch (e) {
-				//might error b/c bugs, don't care
-			}
+			helper.setupPeers(client, options.channel_id);
+
+			helper.setPrimaryPeer(client, options.channel_id);
 
 			// --- Success --- //
 			logger.debug('[fcw] Successfully got enrollment ' + options.uuid);
-			if (cb) cb(null, { chain: chain, submitter: submitter });
+			if (cb) cb(null, { client: client, chain: chain, submitter: submitter });
+
 			return;
 
 		}).catch(
@@ -128,47 +115,55 @@ module.exports = function (logger) {
 	// Get Submitter - ripped this function off from fabric-client
 	function getSubmitter(client, options) {
 		var member;
-		return client.getUserContext(options.enroll_id).then((user) => {
-			if (user && user.isEnrolled()) {
-				logger.info('[fcw] Successfully loaded member from persistence');
-				return user;
-			} else {
+		return client.getUserContext(options.enroll_id, true/* checkPersistence */).
+		then((user) => {
+			return new Promise((resolve, reject) => {
+				if (user && user.isEnrolled()) {
+					logger.info('[fcw] Successfully loaded member from persistence');
+					return resolve(user);
+				} else {
 
-				// Need to enroll it with CA server
-				var tlsOptions = {
-					trustedRoots: [options.ca_tls_opts.pem],
-					verify: false
-				};
-				var ca_client = new CaService(options.ca_url, tlsOptions);
-				logger.debug('id', options.enroll_id, 'secret', options.enroll_secret);
-				logger.debug('msp_id', options.msp_id);
-				return ca_client.enroll({
-					enrollmentID: options.enroll_id,
-					enrollmentSecret: options.enroll_secret
+					console.log('USER DETAILS', user);
 
-					// Store Certs
-				}).then((enrollment) => {
-					logger.info('[fcw] Successfully enrolled user \'' + options.enroll_id + '\'');
-					member = new User(options.enroll_id, client);
+					// Need to enroll it with CA server
+					var tlsOptions = {
+						trustedRoots: [options.ca_tls_opts.pem],
+						verify: false
+					};
+					var ca_client = new CaService(options.ca_url, tlsOptions, options.ca_name);
+					logger.debug('id', options.enroll_id, 'secret', options.enroll_secret);
+					logger.debug('msp_id', options.msp_id);
+					return ca_client.enroll({
+						enrollmentID: options.enroll_id,
+						enrollmentSecret: options.enroll_secret
 
-					return member.setEnrollment(enrollment.key, enrollment.certificate, options.msp_id);
+						// Store Certs
+					}).then((enrollment) => {
+						logger.info('[fcw] Successfully enrolled user \'' + options.enroll_id + '\'');
+						member = new User(options.enroll_id, client);
 
-					// Save Submitter Enrollment
-				}).then(() => {
-					return client.setUserContext(member);
+						return member.setEnrollment(enrollment.key, enrollment.certificate, options.msp_id);
 
-					// Return Submitter Enrollment
-				}).then(() => {
-					return member;
+						// Save Submitter Enrollment
+					}).then(() => {
+						return client.setUserContext(member);
 
-					// Send Errors to Callback
-				}).catch((err) => {
-					logger.error('[fcw] Failed to enroll and persist user. Error: ' + err.stack ? err.stack : err);
-					throw new Error('Failed to obtain an enrolled user');
-				});
-			}
+						// Return Submitter Enrollment
+					}).then(() => {
+						return resolve(member);
+
+						// Send Errors to Callback
+					}).catch((err) => {
+						logger.error('[fcw] Failed to enroll and persist user. Error: ' + err.stack ? err.stack : err);
+						return reject(err);
+	//					throw new Error('Failed to obtain an enrolled user');
+					});
+				}
+
+			})
 		});
 	}
+
 
 	return enrollment;
 };
